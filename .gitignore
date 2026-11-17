@@ -3,6 +3,9 @@ dist/
 data/
 secrets/
 .env
+.dev.vars
+.dev.vars.*
+.playwright-mcp/
 *.log
 .wrangler/
 .orkestra/
