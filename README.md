@@ -7,6 +7,12 @@ A read-only [MCP](https://modelcontextprotocol.io) server for the **Google Searc
 - **Per-client tokens.** Issue, list, rotate and revoke bearer tokens with an expiry and an optional per-token property allowlist.
 - **Stays inside Google's quotas.** Caching, local rate limiting at 80% of Google's published limits, retries with backoff, and per-property pauses after quota errors.
 
+```bash
+git clone https://github.com/gitupcms/gsc-mcp.git && cd gsc-mcp && npm install
+```
+
+Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-mcp) (MIT), ported from Express to [Hono](https://hono.dev), with ideas and prompt workflows adapted from [AminForou/mcp-gsc](https://github.com/AminForou/mcp-gsc).
+
 ## Contents
 
 - [Tools](#tools)
