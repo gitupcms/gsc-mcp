@@ -27,6 +27,7 @@ Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-
 - [Quota model](#quota-model)
 - [Index watch: compare before and after a deploy](#index-watch-compare-before-and-after-a-deploy)
 - [Limitations](#limitations)
+- [Troubleshooting](#troubleshooting)
 - [Development](#development)
 
 ## Tools
@@ -204,7 +205,19 @@ npm run cf:deploy                                     # wrangler deploy
 curl https://<your-worker>.workers.dev/healthz
 ```
 
-Other settings (`ALLOWED_HOSTS`, `GSC_ALLOWED_SITES`, `TOKEN_TTL_DAYS`, `MCP_PATH`, ...) go in `"vars"` in `wrangler.jsonc`. `HOST`, `PORT`, `DATA_DIR` and `GOOGLE_APPLICATION_CREDENTIALS` do not apply on Workers. `npm run cf:dev` runs it locally.
+Other settings (`ALLOWED_HOSTS`, `GSC_ALLOWED_SITES`, `TOKEN_TTL_DAYS`, `MCP_PATH`, ...) go in `"vars"` in `wrangler.jsonc`. `HOST`, `PORT`, `DATA_DIR` and `GOOGLE_APPLICATION_CREDENTIALS` do not apply on Workers.
+
+`npm run cf:dev` (`wrangler dev`) runs it locally and reads secrets from `.dev.vars` (dotenv format, git-ignored). The same file can upload all secrets at once, so none of them pass through your terminal history:
+
+```bash
+# .dev.vars: ADMIN_TOKEN=..., GOOGLE_OAUTH_CLIENT_ID=..., GOOGLE_OAUTH_CLIENT_SECRET=...,
+#            GOOGLE_OAUTH_REFRESH_TOKEN=..., GSC_ALLOWED_SITES=sc-domain:example.com
+npm run cf:dev                      # local test
+npx wrangler secret bulk .dev.vars  # upload every line as a secret
+npm run cf:deploy
+```
+
+After a deploy, the running Durable Object can keep serving the previous version for a minute or two until it restarts; a new tool returning "Tool ... not found" right after a deploy usually means just that.
 
 ## Token management
 
@@ -348,6 +361,20 @@ Catch pages falling out of the index before traffic drops. Every non-cached insp
 - **Data lag:** final data lags 2-3 days; dates are Pacific Time. Use `dataState: "all"` for fresher, incomplete data.
 - **Stateless transport only:** GET/DELETE on the MCP path return 405; clients needing the old HTTP+SSE transport are not supported. Local clients can use stdio instead.
 - **Sorting is per response:** `sortBy` reorders the rows Google returned. Google always picks rows by clicks, so sorting by position or CTR does not find rows beyond `rowLimit`.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `AUTH_ERROR` mentioning `invalid_grant` after about a week | The OAuth consent screen is in **Testing**, where Google expires refresh tokens after 7 days. Publish the app (**In production**), then run `npm run oauth:login` again and replace `GOOGLE_OAUTH_REFRESH_TOKEN`. |
+| `AUTH_ERROR` "The refresh token grants ... this server only accepts ...webmasters.readonly" | The refresh token was granted a wider Search Console scope than `webmasters.readonly`. Run `npm run oauth:login` again; it requests the read-only scope only. |
+| `PERMISSION_DENIED` | The Google account (OAuth) or service account has no access to that property in Search Console. |
+| `SITE_NOT_ALLOWED` | The property is not in `GSC_ALLOWED_SITES` or in the token's `allowedSites`. Use the exact form from `list_sites` (`sc-domain:example.com` or `https://www.example.com/`). |
+| OpenCode shows the server as `pending` | OpenCode resolves `{env:VAR}` in the process that loads the config. With the background service (`opencode serve --service`) that process started before your variables were set: export `GSC_MCP_URL`/`GSC_MCP_TOKEN` in your shell profile and restart the service, or run `opencode --standalone`. |
+| Claude Code lists `gitupcms-gscmcp` from this repo but cannot connect | `.mcp.json` needs `GSC_MCP_URL` and `GSC_MCP_TOKEN` in the environment. |
+| `DATA_DIR ... is in use by another process` | Another server process uses the same `DATA_DIR`. Run one process per directory, or wait 90 s if the previous one crashed. |
+| Admin API answers `429` | 10 failed admin logins in 15 minutes lock `/admin/tokens` for everyone; wait for `Retry-After`. |
+| `npm run oauth:login` prints nothing | Run the script directly: `node node_modules/tsx/dist/cli.mjs scripts/oauth-login.ts`. |
 
 ## Development
 
