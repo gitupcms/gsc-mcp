@@ -22,6 +22,7 @@ Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-
 - [Deploy: Cloudflare Workers](#deploy-cloudflare-workers)
 - [Token management](#token-management)
 - [Connect a client](#connect-a-client)
+- [claude.ai (web and mobile)](#claudeai-web-and-mobile)
 - [Claude Code / Cursor / OpenCode plugin](#claude-code--cursor--opencode-plugin)
 - [Configuration reference](#configuration-reference)
 - [Quota model](#quota-model)
@@ -275,6 +276,20 @@ claude mcp list
 
 The shell expands the token, so it is saved in plain text in `~/.claude.json`. To share with a team, commit a `.mcp.json` using `"headers": { "Authorization": "Bearer ${GSC_MCP_TOKEN}" }` instead.
 
+## claude.ai (web and mobile)
+
+claude.ai custom connectors sign in with OAuth. When `ADMIN_TOKEN` is set, the server is its own small OAuth 2.1 authorization server (dynamic client registration, PKCE S256, refresh token rotation) that issues the usual `gsc_` tokens.
+
+1. In claude.ai: **Settings > Connectors > Add custom connector**, URL `https://<host>/mcp` (or your `MCP_PATH`). Leave the OAuth client fields empty.
+2. Claude opens this server's consent page. Enter `ADMIN_TOKEN` once and click **Allow**. Wrong entries count toward the same lockout as the admin API (10 failures in 15 minutes locks both).
+3. The issued token shows up in `npm run token -- list` as `oauth:claude <client>`. Revoke it there (or via the admin API) to cut off the connector; its refresh token stops working too.
+
+- Mobile apps use the connectors added on the web; there is no separate setup.
+- Behind a reverse proxy that changes the scheme or host, set `PUBLIC_URL=https://<host>` so the metadata and `WWW-Authenticate` URLs are the public ones. With `ALLOWED_HOSTS`, the `/oauth/*` and `/.well-known/*` routes are checked too.
+- Allowed redirect URIs: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, loopback `http://localhost:<port>/...` and `http://127.0.0.1:<port>/...` (Claude Code), plus exact URIs in `OAUTH_REDIRECT_URIS`.
+- Firewalls: Claude reaches the server from Anthropic's egress range `160.79.104.0/21`.
+- Alternative: where your organization has the beta **Request headers** option, add `Authorization: Bearer gsc_...` with a token from `npm run token` instead of OAuth.
+
 ## Claude Code / Cursor / OpenCode plugin
 
 The repository is also a plugin for Claude Code (`.claude-plugin/plugin.json`) and Cursor (`.cursor-plugin/plugin.json`). It bundles the four workflows as skills (`skills/*/SKILL.md`, the same steps as the prompts) and connects to your remote HTTP server through two environment variables:
@@ -305,7 +320,7 @@ curl -s https://gsc-mcp.example.com/mcp \
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_TRANSPORT` | `http` | `http` or `stdio` (Node only; the `--stdio` flag does the same) |
-| `ADMIN_TOKEN` | (off) | Enables `/admin/tokens`. Min. 32 chars |
+| `ADMIN_TOKEN` | (off) | Enables `/admin/tokens` and OAuth for claude.ai connectors. Min. 32 chars |
 | `MCP_AUTH_TOKEN` | (off) | Legacy shared bearer token. Min. 32 chars. One of these two is required over HTTP, neither under stdio |
 | `TOKEN_TTL_DAYS` | `90` | Default lifetime of issued tokens (1-365) |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | | The key JSON itself. Required on Workers; takes precedence on Node |
@@ -314,8 +329,10 @@ curl -s https://gsc-mcp.example.com/mcp \
 | `DATA_DIR` | `./data` (`/data` in Docker, `~/.gitupcms-gscmcp` under stdio) | Writable state directory (Node only) |
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Listen address (Node only) |
 | `HOST_PORT` | `3000` | Docker Compose: port published on `127.0.0.1` |
-| `MCP_PATH` | `/mcp` | MCP endpoint path. No trailing slash; not `/healthz` or under `/admin` |
-| `ALLOWED_HOSTS` | (off) | Comma-separated hostnames accepted in the `Host` header (DNS-rebinding protection); applies to the MCP and admin routes |
+| `MCP_PATH` | `/mcp` | MCP endpoint path. No trailing slash; not `/healthz` or under `/admin`, `/oauth`, `/.well-known` |
+| `ALLOWED_HOSTS` | (off) | Comma-separated hostnames accepted in the `Host` header (DNS-rebinding protection); applies to the MCP, admin and OAuth routes |
+| `PUBLIC_URL` | (request origin) | Public origin for OAuth metadata behind a reverse proxy, e.g. `https://gsc-mcp.example.com` (no path) |
+| `OAUTH_REDIRECT_URIS` | | Extra exact OAuth redirect URIs, comma-separated |
 | `GSC_ALLOWED_SITES` | (all) | Comma-separated properties any client may read. Recommended with OAuth |
 | `QUOTA_SAFETY_FACTOR` | `0.8` | Share of Google's published limits to use (>0, ≤1) |
 | `MAX_QUEUE_WAIT_MS` | `15000` | Max wait for a rate-limit or concurrency slot before `LOCAL_RATE_LIMIT` |

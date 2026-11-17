@@ -96,6 +96,7 @@ async function main() {
     deps: { service, logger, maxRowsPerCall: config.GSC_MAX_ROWS_PER_CALL },
     logger,
     admin: config.ADMIN_TOKEN ? { adminToken: config.ADMIN_TOKEN, tokens, defaultTtlDays: config.TOKEN_TTL_DAYS } : undefined,
+    oauth: { store: stateStore, publicUrl: config.PUBLIC_URL, extraRedirectUris: config.OAUTH_REDIRECT_URIS },
   });
 
   const httpServer = serve({ fetch: app.fetch, port: config.PORT, hostname: config.HOST }, () => {

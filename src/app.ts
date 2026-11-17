@@ -1,9 +1,10 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { adminRoutes, type AdminOptions } from './core/admin.js';
+import { AdminGuard, adminRoutes, type AdminOptions } from './core/admin.js';
 import type { AuthContext, VerifyToken } from './core/auth.js';
 import type { Logger } from './core/logger.js';
+import { oauthRoutes, publicOrigin, type OAuthOptions } from './core/oauth.js';
 import { buildServer } from './core/server.js';
 import { EXPIRY_WARNING_MS } from './core/tokens.js';
 import type { ToolDeps } from './core/tools/common.js';
@@ -18,6 +19,8 @@ export interface AppOptions {
   logger: Logger;
   /** Token admin API at /admin/tokens; omitted = 404. */
   admin?: AdminOptions;
+  /** OAuth for claude.ai connectors (/oauth/*, /.well-known/*); mounted only together with `admin`. */
+  oauth?: OAuthOptions;
 }
 
 type Env = { Variables: { auth: AuthContext } };
@@ -44,12 +47,12 @@ function hostHeaderValidation(allowedHostnames: string[]): MiddlewareHandler {
 }
 
 /** Bearer token check through the pluggable verifier. */
-function bearerAuth(verifyToken: VerifyToken): MiddlewareHandler<Env> {
+function bearerAuth(verifyToken: VerifyToken, challenge: (c: Context) => string): MiddlewareHandler<Env> {
   return async (c, next) => {
     const match = /^Bearer\s+(.+)$/i.exec(c.req.header('authorization') ?? '');
     const auth = match ? await verifyToken(match[1]!.trim()) : null;
     if (!auth) {
-      c.header('WWW-Authenticate', 'Bearer');
+      c.header('WWW-Authenticate', challenge(c));
       return rpcError(c, 401, -32001, 'Unauthorized');
     }
     c.set('auth', auth);
@@ -58,17 +61,32 @@ function bearerAuth(verifyToken: VerifyToken): MiddlewareHandler<Env> {
   };
 }
 
-export function createApp({ verifyToken, allowedHosts, mcpPath = '/mcp', deps, logger, admin }: AppOptions): Hono<Env> {
+export function createApp({ verifyToken, allowedHosts, mcpPath = '/mcp', deps, logger, admin, oauth }: AppOptions): Hono<Env> {
   const app = new Hono<Env>();
+  const withOAuth = admin && oauth;
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
 
   if (allowedHosts?.length) app.use(mcpPath, hostHeaderValidation(allowedHosts));
-  app.use(mcpPath, bearerAuth(verifyToken));
+  app.use(
+    mcpPath,
+    bearerAuth(verifyToken, (c) =>
+      withOAuth ? `Bearer resource_metadata="${publicOrigin(c.req.url, oauth.publicUrl)}/.well-known/oauth-protected-resource"` : 'Bearer',
+    ),
+  );
 
   if (admin) {
+    // One lockout for the admin API and the OAuth consent page.
+    const guard = new AdminGuard(admin.adminToken, admin.now);
     if (allowedHosts?.length) app.use('/admin/*', hostHeaderValidation(allowedHosts));
-    app.route('/admin/tokens', adminRoutes(admin));
+    app.route('/admin/tokens', adminRoutes(admin, guard));
+    if (oauth) {
+      if (allowedHosts?.length) {
+        app.use('/oauth/*', hostHeaderValidation(allowedHosts));
+        app.use('/.well-known/*', hostHeaderValidation(allowedHosts));
+      }
+      app.route('/', oauthRoutes({ ...oauth, guard, tokens: admin.tokens, defaultTtlDays: admin.defaultTtlDays, mcpPath, logger, now: admin.now }));
+    }
   }
 
   // Stateless Streamable HTTP: a fresh server and transport per request.

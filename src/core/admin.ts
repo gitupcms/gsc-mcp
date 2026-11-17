@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { singleTokenVerifier } from './auth.js';
+import { singleTokenVerifier, type VerifyToken } from './auth.js';
 import { MAX_TTL_DAYS, type TokenStore } from './tokens.js';
 
 export interface AdminOptions {
@@ -38,24 +38,48 @@ async function parse<T>(c: Context, schema: z.ZodType<T>): Promise<T | Response>
   return parsed.data;
 }
 
+/**
+ * ADMIN_TOKEN check with a global failure lockout, shared by the admin API and the OAuth consent page.
+ * Global, not per IP: client IPs behind proxies are spoofable, and admin logins are rare.
+ */
+export class AdminGuard {
+  private failures: number[] = [];
+  private readonly verify: VerifyToken;
+
+  constructor(
+    adminToken: string,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.verify = singleTokenVerifier(adminToken);
+  }
+
+  /** Seconds until logins are accepted again; 0 = not locked. */
+  lockedFor(): number {
+    const t = this.now();
+    this.failures = this.failures.filter((f) => t - f < ADMIN_FAILURE_WINDOW_MS);
+    return this.failures.length >= ADMIN_MAX_FAILURES ? Math.ceil((this.failures[0]! + ADMIN_FAILURE_WINDOW_MS - t) / 1000) : 0;
+  }
+
+  /** Constant-time check; a wrong or missing token counts as a failure. */
+  async check(token: string | undefined): Promise<boolean> {
+    if (token && (await this.verify(token))) return true;
+    this.failures.push(this.now());
+    return false;
+  }
+}
+
 /** /admin/tokens routes, guarded by the ADMIN_TOKEN bearer. */
-export function adminRoutes({ adminToken, tokens, defaultTtlDays, now = Date.now }: AdminOptions): Hono {
-  const verify = singleTokenVerifier(adminToken);
+export function adminRoutes({ adminToken, tokens, defaultTtlDays, now = Date.now }: AdminOptions, guard = new AdminGuard(adminToken, now)): Hono {
   const app = new Hono();
-  // Global, not per IP: client IPs behind proxies are spoofable, and the admin API is rarely used.
-  let failures: number[] = [];
 
   app.use('*', async (c, next) => {
-    const t = now();
-    failures = failures.filter((f) => t - f < ADMIN_FAILURE_WINDOW_MS);
-    if (failures.length >= ADMIN_MAX_FAILURES) {
-      const retryAfter = Math.ceil((failures[0]! + ADMIN_FAILURE_WINDOW_MS - t) / 1000);
+    const retryAfter = guard.lockedFor();
+    if (retryAfter) {
       c.header('Retry-After', String(retryAfter));
       return c.json({ error: 'Too many failed admin logins; try again later.', retryAfterSeconds: retryAfter }, 429);
     }
     const match = /^Bearer\s+(.+)$/i.exec(c.req.header('authorization') ?? '');
-    if (!match || !(await verify(match[1]!.trim()))) {
-      failures.push(t);
+    if (!(await guard.check(match?.[1]!.trim()))) {
       c.header('WWW-Authenticate', 'Bearer');
       return c.json({ error: 'Unauthorized' }, 401);
     }

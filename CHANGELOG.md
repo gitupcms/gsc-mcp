@@ -4,6 +4,7 @@
 
 ### Added
 
+- **OAuth for claude.ai custom connectors (web and mobile).** With `ADMIN_TOKEN` set: `/.well-known/oauth-protected-resource` (also `/.well-known/oauth-protected-resource/<MCP_PATH>`), `/.well-known/oauth-authorization-server`, `POST /oauth/register` (stateless DCR), `/oauth/authorize` (consent page, enter `ADMIN_TOKEN`; shares the admin lockout) and `POST /oauth/token` (PKCE S256, refresh token rotation). Issues normal `gsc_` tokens named `oauth:claude <client>`; revoking one ends OAuth access. 401s on the MCP route carry `resource_metadata`. New optional `PUBLIC_URL` and `OAUTH_REDIRECT_URIS`; `MCP_PATH` may not be under `/oauth` or `/.well-known`.
 - **OpenCode.** `opencode.json` connects to the remote server via `{env:GSC_MCP_URL}` / `{env:GSC_MCP_TOKEN}`; `.opencode/skills` exposes the four skills.
 - **stdio transport (Node).** `node dist/node/index.js --stdio` or `MCP_TRANSPORT=stdio` (also `npm run start:stdio` and the `gitupcms-gscmcp` bin). No HTTP server, bearer auth or admin routes; `ADMIN_TOKEN`/`MCP_AUTH_TOKEN` are not required. `GSC_ALLOWED_SITES` and the `DATA_DIR` lock still apply; `DATA_DIR` defaults to `~/.gitupcms-gscmcp`. Logs go to stderr.
 - **Claude Code / Cursor plugin.** `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.mcp.json` and `mcp.json` (remote HTTP server via `GSC_MCP_URL`/`GSC_MCP_TOKEN`), and four skills mirroring the prompts: `seo-weekly-report`, `indexing-audit`, `content-opportunities`, `cannibalization-check`.
