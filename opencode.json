@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "gitupcms-gscmcp": {
+      "type": "remote",
+      "url": "{env:GSC_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer {env:GSC_MCP_TOKEN}"
+      },
+      "enabled": true
+    }
+  }
+}

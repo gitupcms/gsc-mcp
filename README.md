@@ -22,7 +22,7 @@ Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-
 - [Deploy: Cloudflare Workers](#deploy-cloudflare-workers)
 - [Token management](#token-management)
 - [Connect a client](#connect-a-client)
-- [Claude Code / Cursor plugin](#claude-code--cursor-plugin)
+- [Claude Code / Cursor / OpenCode plugin](#claude-code--cursor--opencode-plugin)
 - [Configuration reference](#configuration-reference)
 - [Quota model](#quota-model)
 - [Index watch: compare before and after a deploy](#index-watch-compare-before-and-after-a-deploy)
@@ -262,7 +262,7 @@ claude mcp list
 
 The shell expands the token, so it is saved in plain text in `~/.claude.json`. To share with a team, commit a `.mcp.json` using `"headers": { "Authorization": "Bearer ${GSC_MCP_TOKEN}" }` instead.
 
-## Claude Code / Cursor plugin
+## Claude Code / Cursor / OpenCode plugin
 
 The repository is also a plugin for Claude Code (`.claude-plugin/plugin.json`) and Cursor (`.cursor-plugin/plugin.json`). It bundles the four workflows as skills (`skills/*/SKILL.md`, the same steps as the prompts) and connects to your remote HTTP server through two environment variables:
 
@@ -273,6 +273,8 @@ export GSC_MCP_TOKEN='gsc_...'
 
 - Claude Code reads `.mcp.json`, which uses Claude Code's `${VAR}` expansion in `url` and `headers`.
 - Cursor reads `mcp.json`, which uses Cursor's `${env:VAR}` syntax. This was written from Cursor's documentation and not tested against every Cursor version; if your Cursor does not expand it, put the URL and header in `~/.cursor/mcp.json` directly.
+
+- OpenCode reads `opencode.json` (`{env:VAR}` substitution) and loads the skills from `.opencode/skills` (a symlink to `skills/`). OpenCode resolves `{env:VAR}` in the process that loads the config: if you run the background service (`opencode serve --service`), start it with these variables set, or use `opencode --standalone`. For a local server, use a `"type": "local"` entry with `"command": ["node", "/path/to/dist/node/index.js", "--stdio"]` and the Google variables in `"environment"`.
 
 Install it with your client's plugin command pointed at this repository (or a local clone). To run the server locally instead, replace the server entry with the stdio example from [Local stdio](#local-stdio-claude-desktop--claude-code--cursor).
 
