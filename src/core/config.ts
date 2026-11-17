@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { GoogleAuth } from './google/client.js';
 
 const csv = z
   .string()
@@ -40,9 +41,13 @@ const ConfigSchema = z.object({
   // Enables the /admin/tokens API; unset = admin routes are 404.
   ADMIN_TOKEN: z.string().min(32, 'ADMIN_TOKEN must be at least 32 characters (try `openssl rand -hex 32`)').optional(),
   TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(90),
-  // Key file path (Node adapter only) or the key JSON itself (any runtime); one is required.
+  // Google sign-in, exactly one of: a service account (key file path, Node only, or the key JSON itself)
+  // or a user's OAuth client + refresh token from `npm run oauth:login` (all three together).
   GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
   GOOGLE_SERVICE_ACCOUNT_JSON: z.string().min(1).optional(),
+  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+  GOOGLE_OAUTH_REFRESH_TOKEN: z.string().min(1).optional(),
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   // Path of the MCP endpoint, e.g. /gsc-mcp when a reverse proxy publishes it under that path.
@@ -68,15 +73,42 @@ const ConfigSchema = z.object({
   CACHE_ENABLED: bool.transform((v) => v ?? true),
   DATA_DIR: z.string().default('./data'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-}).refine((c) => c.GOOGLE_APPLICATION_CREDENTIALS || c.GOOGLE_SERVICE_ACCOUNT_JSON, {
-  message: 'Set GOOGLE_SERVICE_ACCOUNT_JSON (the key JSON) or GOOGLE_APPLICATION_CREDENTIALS (path to the key file)',
-  path: ['GOOGLE_SERVICE_ACCOUNT_JSON'],
+}).superRefine((c, ctx) => {
+  const serviceAccount = Boolean(c.GOOGLE_APPLICATION_CREDENTIALS || c.GOOGLE_SERVICE_ACCOUNT_JSON);
+  const oauthVars = [c.GOOGLE_OAUTH_CLIENT_ID, c.GOOGLE_OAUTH_CLIENT_SECRET, c.GOOGLE_OAUTH_REFRESH_TOKEN].filter(Boolean).length;
+  const issue = (message: string, key: string) => ctx.addIssue({ code: 'custom', message, path: [key] });
+  if (oauthVars > 0 && oauthVars < 3) {
+    issue('Set all three of GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (npm run oauth:login)', 'GOOGLE_OAUTH_REFRESH_TOKEN');
+  } else if (serviceAccount && oauthVars) {
+    issue('Both a service account and GOOGLE_OAUTH_* are set; set only one Google sign-in method', 'GOOGLE_OAUTH_REFRESH_TOKEN');
+  } else if (!serviceAccount && !oauthVars) {
+    issue(
+      'Set GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN (OAuth), or GOOGLE_SERVICE_ACCOUNT_JSON (the key JSON) or GOOGLE_APPLICATION_CREDENTIALS (path to the key file)',
+      'GOOGLE_SERVICE_ACCOUNT_JSON',
+    );
+  }
 }).refine((c) => c.MCP_AUTH_TOKEN || c.ADMIN_TOKEN, {
   message: 'Set ADMIN_TOKEN (to issue tokens via /admin/tokens) and/or MCP_AUTH_TOKEN (legacy shared token)',
   path: ['ADMIN_TOKEN'],
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+/** The OAuth sign-in when GOOGLE_OAUTH_* is set (the schema guarantees all three or none). */
+export function oauthAuth(c: Config): Extract<GoogleAuth, { kind: 'oauth' }> | undefined {
+  if (!c.GOOGLE_OAUTH_REFRESH_TOKEN) return undefined;
+  return { kind: 'oauth', clientId: c.GOOGLE_OAUTH_CLIENT_ID!, clientSecret: c.GOOGLE_OAUTH_CLIENT_SECRET!, refreshToken: c.GOOGLE_OAUTH_REFRESH_TOKEN };
+}
+
+/** Configuration warnings to log at startup. */
+export function startupWarnings(c: Config): string[] {
+  const warnings: string[] = [];
+  if (c.MCP_AUTH_TOKEN) warnings.push('MCP_AUTH_TOKEN is deprecated; issue per-client tokens via /admin/tokens (ADMIN_TOKEN)');
+  if (c.GOOGLE_OAUTH_REFRESH_TOKEN && !c.GSC_ALLOWED_SITES?.length) {
+    warnings.push('OAuth sees every property of the account; set GSC_ALLOWED_SITES to limit what clients can read');
+  }
+  return warnings;
+}
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const parsed = ConfigSchema.safeParse(env);

@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { serve } from '@hono/node-server';
 import { createApp } from '../app.js';
-import { loadConfig } from '../core/config.js';
-import { createGscApi, parseServiceAccountKey, type ServiceAccountKey } from '../core/google/client.js';
+import { loadConfig, oauthAuth, startupWarnings } from '../core/config.js';
+import { createGscApi, parseServiceAccountKey, type GoogleAuth, type ServiceAccountKey } from '../core/google/client.js';
 import { GscService } from '../core/google/service.js';
 import { createLogger } from '../core/logger.js';
 import { SERVER_NAME, SERVER_VERSION } from '../core/server.js';
@@ -24,16 +24,20 @@ function readKey(json: string | undefined, file: string | undefined): ServiceAcc
 async function main() {
   const config = loadConfig(process.env);
   const logger = createLogger(config.LOG_LEVEL);
-  const key = readKey(config.GOOGLE_SERVICE_ACCOUNT_JSON, config.GOOGLE_APPLICATION_CREDENTIALS);
+  const auth: GoogleAuth = oauthAuth(config) ?? {
+    kind: 'service_account',
+    key: readKey(config.GOOGLE_SERVICE_ACCOUNT_JSON, config.GOOGLE_APPLICATION_CREDENTIALS),
+  };
   ensureWritableDir(config.DATA_DIR);
   const releaseLock = acquireDirLock(config.DATA_DIR);
-  const serviceAccountEmail = key.client_email;
+  const serviceAccountEmail = auth.kind === 'service_account' ? auth.key.client_email : undefined;
   const stateStore = new FileStateStore(config.DATA_DIR);
   const tokens = new TokenStore(stateStore, logger);
-  if (config.MCP_AUTH_TOKEN) logger.warn('MCP_AUTH_TOKEN is deprecated; issue per-client tokens via /admin/tokens (ADMIN_TOKEN)');
+  for (const w of startupWarnings(config)) logger.warn(w);
 
-  const service = new GscService(createGscApi(key), {
+  const service = new GscService(createGscApi(auth), {
     serviceAccountEmail,
+    authMethod: auth.kind,
     allowedSites: config.GSC_ALLOWED_SITES,
     safetyFactor: config.QUOTA_SAFETY_FACTOR,
     maxQueueWaitMs: config.MAX_QUEUE_WAIT_MS,
@@ -58,6 +62,7 @@ async function main() {
       version: SERVER_VERSION,
       host: config.HOST,
       port: config.PORT,
+      auth: auth.kind,
       serviceAccount: serviceAccountEmail,
       allowedSites: config.GSC_ALLOWED_SITES?.length ?? 'all',
       safetyFactor: config.QUOTA_SAFETY_FACTOR,

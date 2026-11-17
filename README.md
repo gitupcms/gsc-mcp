@@ -11,7 +11,7 @@ A read-only [MCP](https://modelcontextprotocol.io) server for the **Google Searc
 
 - [Tools](#tools)
 - [Prompts](#prompts)
-- [Google service account setup](#google-service-account-setup)
+- [Google auth: OAuth (recommended for personal use) or service account](#google-auth-oauth-recommended-for-personal-use-or-service-account)
 - [Deploy: Docker / Node.js](#deploy-docker--nodejs)
 - [Deploy: Cloudflare Workers](#deploy-cloudflare-workers)
 - [Token management](#token-management)
@@ -56,7 +56,50 @@ Each takes one argument, `siteUrl`.
 | `content-opportunities` | `find_ctr_opportunities` plus page-2 queries scored by impressions |
 | `cannibalization-check` | `find_cannibalization` and a keep/canonical/redirect/merge plan |
 
-## Google service account setup
+## Google auth: OAuth (recommended for personal use) or service account
+
+The server signs in to Google in exactly one of two ways; setting both stops startup with an error:
+
+- **OAuth (your own Google account).** No user to add in Search Console: the server sees every property your account can see. Best for personal use.
+- **Service account.** A robot account you add to each property like a colleague. Best for teams and servers you do not want tied to a person.
+
+Either way only the `webmasters.readonly` scope is used. With OAuth the server also checks the scope Google reports for the token and refuses one that grants more (e.g. `.../auth/webmasters`).
+
+### OAuth setup
+
+In the [Google Cloud console](https://console.cloud.google.com/):
+
+1. Create or pick a project and enable the **Google Search Console API** (APIs & Services → Library).
+2. OAuth consent screen (Google Auth Platform): user type **External**, fill in the app name and your email. Add the scope `https://www.googleapis.com/auth/webmasters.readonly`. While the app is in **Testing**, add your own Google account under Test users.
+3. **Testing mode limit:** refresh tokens of apps in Testing expire after **7 days**, and the server then fails with `AUTH_ERROR` (`invalid_grant`). For lasting use, set the publishing status to **In production**. As far as we know `webmasters.readonly` counts as a *sensitive* scope (not restricted). We have not verified this; check the scope list on your consent screen. For a sensitive scope, an unverified app in production still works for your own account: Google shows an "unverified app" warning that you click through, and the app is capped at 100 users. No verification is needed for personal use.
+4. Credentials → Create credentials → OAuth client ID → Application type **Desktop app**. Download the JSON or copy the client id and secret.
+
+Then, on any machine with a browser:
+
+```bash
+npm ci
+npm run oauth:login -- --client-secrets ~/Downloads/client_secret_XXX.json
+# or: GOOGLE_OAUTH_CLIENT_ID=... GOOGLE_OAUTH_CLIENT_SECRET=... npm run oauth:login
+```
+
+It opens (or prints) a Google sign-in URL, listens on `127.0.0.1` on a random port for the redirect (PKCE and `state` checked, 5 minute timeout), asks only for `webmasters.readonly`, checks the granted scope and prints the refresh token. It writes no files. Put the three values in the server's environment:
+
+```bash
+# .env (Docker / Node)
+GOOGLE_OAUTH_CLIENT_ID=123-abc.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-...
+GOOGLE_OAUTH_REFRESH_TOKEN=1//0g...
+GSC_ALLOWED_SITES=https://www.example.com/,sc-domain:example.org
+
+# Workers
+npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+npx wrangler secret put GOOGLE_OAUTH_REFRESH_TOKEN
+```
+
+OAuth sees every property of the account, so set `GSC_ALLOWED_SITES` to the properties clients may read; the server logs a warning when it is empty. If the token is revoked or expires, tools return `AUTH_ERROR`: run `npm run oauth:login` again and replace `GOOGLE_OAUTH_REFRESH_TOKEN`. Revoke access any time at https://myaccount.google.com/permissions.
+
+### Service account setup
 
 The server signs in to Google as a **service account**. You add its email to Search Console like a colleague.
 
@@ -114,11 +157,11 @@ State is stored as one JSON file per key in `DATA_DIR`.
 
 ## Deploy: Cloudflare Workers
 
-Configuration is in `wrangler.jsonc`: one Durable Object class `GscHub` (binding `GSC_HUB`) holds the rate limiter, cache, pauses, tokens and inspection history. Key files are not available on Workers, so the key goes in a secret as JSON.
+Configuration is in `wrangler.jsonc`: one Durable Object class `GscHub` (binding `GSC_HUB`) holds the rate limiter, cache, pauses, tokens and inspection history. Key files are not available on Workers, so the key goes in a secret as JSON (or use the three `GOOGLE_OAUTH_*` secrets instead, see [OAuth setup](#oauth-setup)).
 
 ```bash
 npm ci
-npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON   # paste the whole key JSON
+npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON   # paste the whole key JSON (service account)
 npx wrangler secret put ADMIN_TOKEN                   # openssl rand -hex 32
 # optional, legacy: npx wrangler secret put MCP_AUTH_TOKEN
 npm run cf:check                                      # dry-run build
@@ -201,13 +244,14 @@ curl -s https://gsc-mcp.example.com/mcp \
 | `MCP_AUTH_TOKEN` | (off) | Legacy shared bearer token. Min. 32 chars. One of these two is required |
 | `TOKEN_TTL_DAYS` | `90` | Default lifetime of issued tokens (1-365) |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | | The key JSON itself. Required on Workers; takes precedence on Node |
-| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to the key file (Node only). One of the two is required |
+| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to the key file (Node only) |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REFRESH_TOKEN` | | OAuth sign-in (all three; token from `npm run oauth:login`). Set either these or a service account key, not both |
 | `DATA_DIR` | `./data` (`/data` in Docker) | Writable state directory (Node only) |
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Listen address (Node only) |
 | `HOST_PORT` | `3000` | Docker Compose: port published on `127.0.0.1` |
 | `MCP_PATH` | `/mcp` | MCP endpoint path. No trailing slash; not `/healthz` or under `/admin` |
 | `ALLOWED_HOSTS` | (off) | Comma-separated hostnames accepted in the `Host` header (DNS-rebinding protection); applies to the MCP and admin routes |
-| `GSC_ALLOWED_SITES` | (all) | Comma-separated properties any client may read |
+| `GSC_ALLOWED_SITES` | (all) | Comma-separated properties any client may read. Recommended with OAuth |
 | `QUOTA_SAFETY_FACTOR` | `0.8` | Share of Google's published limits to use (>0, ≤1) |
 | `MAX_QUEUE_WAIT_MS` | `15000` | Max wait for a rate-limit or concurrency slot before `LOCAL_RATE_LIMIT` |
 | `MAX_CONCURRENCY` | `4` | Parallel Google API calls (1-32) |
@@ -272,6 +316,7 @@ src/
   node/               Node adapter: @hono/node-server, FileStateStore
   worker/             Workers adapter: GscHub Durable Object, DoStateStore
 scripts/token.ts      token admin CLI
+scripts/oauth-login.ts  OAuth refresh-token helper (npm run oauth:login)
 test/                 vitest tests with an in-memory fake of the Google API
 ```
 

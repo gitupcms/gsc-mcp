@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { createApp } from '../app.js';
-import { loadConfig } from '../core/config.js';
-import { createGscApi, parseServiceAccountKey } from '../core/google/client.js';
+import { loadConfig, oauthAuth, startupWarnings } from '../core/config.js';
+import { createGscApi, parseServiceAccountKey, type GoogleAuth } from '../core/google/client.js';
 import { GscService } from '../core/google/service.js';
 import { createLogger } from '../core/logger.js';
 import type { StateStore } from '../core/state.js';
@@ -39,11 +39,15 @@ export class GscHub extends DurableObject<Env> {
     const vars = Object.fromEntries(Object.entries(this.env).filter(([, v]) => typeof v === 'string')) as Record<string, string>;
     const config = loadConfig(vars);
     const logger = createLogger(config.LOG_LEVEL);
-    if (!config.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('Set the GOOGLE_SERVICE_ACCOUNT_JSON secret (key files are not available on Workers)');
-    const key = parseServiceAccountKey(config.GOOGLE_SERVICE_ACCOUNT_JSON, 'GOOGLE_SERVICE_ACCOUNT_JSON');
+    let auth: GoogleAuth | undefined = oauthAuth(config);
+    if (!auth) {
+      if (!config.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('Set the GOOGLE_SERVICE_ACCOUNT_JSON secret (key files are not available on Workers) or the GOOGLE_OAUTH_* secrets');
+      auth = { kind: 'service_account', key: parseServiceAccountKey(config.GOOGLE_SERVICE_ACCOUNT_JSON, 'GOOGLE_SERVICE_ACCOUNT_JSON') };
+    }
     const stateStore = new DoStateStore(this.ctx.storage);
-    const service = new GscService(createGscApi(key), {
-      serviceAccountEmail: key.client_email,
+    const service = new GscService(createGscApi(auth), {
+      serviceAccountEmail: auth.kind === 'service_account' ? auth.key.client_email : undefined,
+      authMethod: auth.kind,
       allowedSites: config.GSC_ALLOWED_SITES,
       safetyFactor: config.QUOTA_SAFETY_FACTOR,
       maxQueueWaitMs: config.MAX_QUEUE_WAIT_MS,
@@ -54,7 +58,8 @@ export class GscHub extends DurableObject<Env> {
     });
     await service.init();
     const tokens = new TokenStore(stateStore, logger);
-    if (config.MCP_AUTH_TOKEN) logger.warn('MCP_AUTH_TOKEN is deprecated; issue per-client tokens via /admin/tokens (ADMIN_TOKEN)');
+    for (const w of startupWarnings(config)) logger.warn(w);
+    logger.info('started', { auth: auth.kind, allowedSites: config.GSC_ALLOWED_SITES?.length ?? 'all' });
     const app = createApp({
       verifyToken: combinedVerifier(tokens, config.MCP_AUTH_TOKEN),
       allowedHosts: config.ALLOWED_HOSTS,

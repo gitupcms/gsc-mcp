@@ -28,6 +28,7 @@ export function registerCapabilityTools(server: McpServer, { service, logger }: 
       return {
         scope: GSC_READONLY_SCOPE,
         readOnly: true,
+        authMethod: service.opts.authMethod ?? 'service_account',
         inspectionHistory: 'Fresh URL inspections are kept on this server for index_diff; no tool writes anything.',
         tools,
         sites: quota.sites.map((s) => ({

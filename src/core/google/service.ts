@@ -15,10 +15,13 @@ import { InspectionHistory } from '../inspectionHistory.js';
 import type { Logger } from '../logger.js';
 import { StoredState, type StateStore } from '../state.js';
 import { nextPtMidnight, ptDay } from '../time.js';
-import type { GscApi, InspectUrlIndexRequest, RequestOptions, SearchAnalyticsQueryRequest } from './client.js';
+import type { AuthMethod, GscApi, InspectUrlIndexRequest, RequestOptions, SearchAnalyticsQueryRequest } from './client.js';
 
 export interface GscServiceOptions {
-  serviceAccountEmail: string;
+  /** Service-account email, named in PERMISSION_DENIED advice; unset with OAuth. */
+  serviceAccountEmail?: string;
+  /** Default service_account. */
+  authMethod?: AuthMethod;
   allowedSites?: string[];
   safetyFactor: number;
   maxQueueWaitMs: number;
@@ -213,7 +216,7 @@ export class GscService {
         }
       }
     } catch (err) {
-      const toolErr = toToolError(err, { siteUrl: spec.siteUrl, serviceAccountEmail: this.opts.serviceAccountEmail });
+      const toolErr = toToolError(err, { siteUrl: spec.siteUrl, serviceAccountEmail: this.opts.serviceAccountEmail, authMethod: this.opts.authMethod });
       log.warn('tool call failed', { tool: spec.tool, site: spec.siteUrl, code: toolErr.code, message: toolErr.message, ms: Date.now() - started });
       throw toolErr;
     }

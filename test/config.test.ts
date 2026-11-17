@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostnameOnly, loadConfig } from '../src/core/config.js';
+import { hostnameOnly, loadConfig, oauthAuth, startupWarnings } from '../src/core/config.js';
 
 const base = { MCP_AUTH_TOKEN: 'x'.repeat(32), GOOGLE_APPLICATION_CREDENTIALS: 'key.json' };
 
@@ -20,6 +20,28 @@ describe('service account key', () => {
   it('accepts the key JSON instead of a file path, and requires one of them', () => {
     expect(loadConfig({ MCP_AUTH_TOKEN: base.MCP_AUTH_TOKEN, GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }).GOOGLE_SERVICE_ACCOUNT_JSON).toBe('{}');
     expect(() => loadConfig({ MCP_AUTH_TOKEN: base.MCP_AUTH_TOKEN })).toThrow(/GOOGLE_SERVICE_ACCOUNT_JSON/);
+  });
+});
+
+describe('Google OAuth', () => {
+  const oauth = { ADMIN_TOKEN: 'a'.repeat(32), GOOGLE_OAUTH_CLIENT_ID: 'cid', GOOGLE_OAUTH_CLIENT_SECRET: 'cs', GOOGLE_OAUTH_REFRESH_TOKEN: 'rt' };
+
+  it('accepts the three OAuth variables instead of a service account', () => {
+    expect(oauthAuth(loadConfig(oauth))).toEqual({ kind: 'oauth', clientId: 'cid', clientSecret: 'cs', refreshToken: 'rt' });
+    expect(oauthAuth(loadConfig(base))).toBeUndefined();
+  });
+
+  it('needs exactly one sign-in method', () => {
+    expect(() => loadConfig({ ...oauth, GOOGLE_SERVICE_ACCOUNT_JSON: '{}' })).toThrow(/only one Google sign-in method/);
+    expect(() => loadConfig({ ...oauth, GOOGLE_APPLICATION_CREDENTIALS: 'key.json' })).toThrow(/only one Google sign-in method/);
+    expect(() => loadConfig({ ...oauth, GOOGLE_OAUTH_CLIENT_SECRET: undefined })).toThrow(/all three/);
+    expect(() => loadConfig({ MCP_AUTH_TOKEN: base.MCP_AUTH_TOKEN })).toThrow(/GOOGLE_OAUTH_CLIENT_ID/);
+  });
+
+  it('warns when OAuth runs without GSC_ALLOWED_SITES', () => {
+    expect(startupWarnings(loadConfig(oauth))).toEqual([expect.stringMatching(/OAuth sees every property.*GSC_ALLOWED_SITES/)]);
+    expect(startupWarnings(loadConfig({ ...oauth, GSC_ALLOWED_SITES: 'sc-domain:a.com' }))).toEqual([]);
+    expect(startupWarnings(loadConfig(base)).some((w) => w.includes('OAuth'))).toBe(false);
   });
 });
 

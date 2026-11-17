@@ -117,6 +117,17 @@ export interface ServiceAccountKey {
   private_key: string;
 }
 
+/** How the server signs in to Google: a service account, or a user's OAuth refresh token (`npm run oauth:login`). */
+export type GoogleAuth =
+  | { kind: 'service_account'; key: ServiceAccountKey }
+  | { kind: 'oauth'; clientId: string; clientSecret: string; refreshToken: string };
+export type AuthMethod = GoogleAuth['kind'];
+
+/** Search Console scopes in a space-separated `scope` string that are wider than read-only (e.g. .../auth/webmasters). */
+export function widerGscScopes(scope: string): string[] {
+  return scope.split(/\s+/).filter((s) => s.startsWith('https://www.googleapis.com/auth/webmasters') && s !== GSC_READONLY_SCOPE);
+}
+
 /** Parses and checks a service-account key JSON, failing early on a bad key. */
 export function parseServiceAccountKey(json: string, source = 'service account key'): ServiceAccountKey {
   let key: { type?: string; client_email?: string; private_key?: string };
@@ -201,7 +212,7 @@ export interface GscApiOptions {
   now?: () => number;
 }
 
-export function createGscApi(key: ServiceAccountKey, { fetch: fetchFn = (...a) => fetch(...a), now = Date.now }: GscApiOptions = {}): GscApi {
+export function createGscApi(auth: GoogleAuth, { fetch: fetchFn = (...a) => fetch(...a), now = Date.now }: GscApiOptions = {}): GscApi {
   let cryptoKey: Promise<CryptoKey> | undefined;
   let token: { value: string; expiresAt: number } | undefined;
   let refreshing: Promise<string> | undefined;
@@ -219,16 +230,31 @@ export function createGscApi(key: ServiceAccountKey, { fetch: fetchFn = (...a) =
     return data;
   }
 
+  async function grantBody(issuedAt: number): Promise<URLSearchParams> {
+    if (auth.kind === 'oauth') {
+      return new URLSearchParams({ grant_type: 'refresh_token', client_id: auth.clientId, client_secret: auth.clientSecret, refresh_token: auth.refreshToken });
+    }
+    cryptoKey ??= importPrivateKey(auth.key.private_key);
+    const assertion = await signJwt(auth.key, await cryptoKey, issuedAt);
+    return new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion });
+  }
+
   async function fetchToken(): Promise<string> {
-    cryptoKey ??= importPrivateKey(key.private_key);
     const issuedAt = now();
-    const assertion = await signJwt(key, await cryptoKey, issuedAt);
     const data = (await send(TOKEN_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }).toString(),
-    })) as { access_token?: string; expires_in?: number };
+      body: (await grantBody(issuedAt)).toString(),
+    })) as { access_token?: string; expires_in?: number; scope?: string };
     if (!data.access_token) throw new GoogleApiError(401, new Headers(), { error: 'invalid_token_response', error_description: 'No access_token in token response' });
+    // A user token keeps the scopes it was granted; refuse one that could write to Search Console.
+    const wider = auth.kind === 'oauth' && data.scope ? widerGscScopes(data.scope) : [];
+    if (wider.length) {
+      throw new GoogleApiError(401, new Headers(), {
+        error: 'scope_too_broad',
+        error_description: `The refresh token grants ${wider.join(' ')}; this server only accepts ${GSC_READONLY_SCOPE}. Run npm run oauth:login again.`,
+      });
+    }
     token = { value: data.access_token, expiresAt: issuedAt + (data.expires_in ?? 3600) * 1000 };
     return token.value;
   }

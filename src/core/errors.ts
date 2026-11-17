@@ -174,6 +174,8 @@ export function rateLimitCooldownMs(c: ClassifiedGoogleError): number {
 export interface ErrorContext {
   siteUrl?: string;
   serviceAccountEmail?: string;
+  /** How the server signs in to Google; changes the advice in permission and auth errors. Default service_account. */
+  authMethod?: 'service_account' | 'oauth';
 }
 
 /** Turns a Google API error into a GscToolError with an actionable message. */
@@ -181,12 +183,16 @@ export function toToolError(err: unknown, ctx: ErrorContext = {}): GscToolError 
   if (err instanceof GscToolError) return err;
   const c = classifyGoogleError(err);
   const site = ctx.siteUrl ? ` "${ctx.siteUrl}"` : '';
+  const oauth = ctx.authMethod === 'oauth';
   switch (c.kind) {
     case 'permission':
       return new GscToolError(
         'PERMISSION_DENIED',
-        `Google denied access to property${site}. In Search Console, open the property > Settings > Users and permissions, ` +
-          `and add ${ctx.serviceAccountEmail ?? 'the service account email'} as a user. Google said: ${c.message}`,
+        oauth
+          ? `Google denied access to property${site}: the Google account that ran oauth:login has no access to this property. ` +
+              `Sign in with an account that is a user of the property, or add that account in Search Console > Settings > Users and permissions. Google said: ${c.message}`
+          : `Google denied access to property${site}. In Search Console, open the property > Settings > Users and permissions, ` +
+              `and add ${ctx.serviceAccountEmail ?? 'the service account email'} as a user. Google said: ${c.message}`,
       );
     case 'notFound':
       return new GscToolError(
@@ -199,10 +205,18 @@ export function toToolError(err: unknown, ctx: ErrorContext = {}): GscToolError 
     case 'apiDisabled':
       return new GscToolError(
         'AUTH_ERROR',
-        "The Google Search Console API is not enabled in the service account's Google Cloud project. Enable it in the Cloud console " +
+        `The Google Search Console API is not enabled in the ${oauth ? 'OAuth client' : 'service account'}'s Google Cloud project. Enable it in the Cloud console ` +
           `(APIs & Services > Library > Google Search Console API) and retry in a few minutes. Google said: ${c.message}`,
       );
     case 'auth':
+      if (oauth) {
+        return new GscToolError(
+          'AUTH_ERROR',
+          c.reason === 'invalid_grant'
+            ? 'The OAuth refresh token was revoked or has expired (invalid_grant). Get a new refresh token with npm run oauth:login and update GOOGLE_OAUTH_REFRESH_TOKEN.'
+            : `The server could not authenticate to Google with OAuth${c.reason ? ` (${c.reason})` : ''}: ${c.message}`,
+        );
+      }
       return new GscToolError(
         'AUTH_ERROR',
         `The server could not authenticate to Google${c.reason ? ` (${c.reason})` : ''}. ` +
