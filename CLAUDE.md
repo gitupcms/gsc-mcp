@@ -1,0 +1,57 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A read-only MCP server for Google Search Console. Streamable HTTP (stateless, POST only) on Hono, per-client bearer tokens, and a Google service account limited to the `webmasters.readonly` scope. It runs on Node.js (Docker or bare) and on Cloudflare Workers from the same core. The main job of the codebase is staying inside Google's quotas; see the Quota model section of README.md.
+
+## Commands
+
+```bash
+npm test                                  # vitest run (no Google access needed)
+npx vitest run test/service.test.ts       # one file
+npx vitest run -t "load quota"            # tests whose name matches
+npm run typecheck                         # three passes: core (no Node types), Node + tests + scripts, Worker
+npm run build                             # tsc -p tsconfig.build.json -> dist/ (Node)
+npm run cf:check                          # wrangler deploy --dry-run --outdir .wrangler/dry
+npm run dev                               # tsx watch src/node/index.ts; needs ADMIN_TOKEN or MCP_AUTH_TOKEN (>=32 chars), a key, DATA_DIR
+npm run token -- list --url <base>        # token admin CLI (scripts/token.ts), reads ADMIN_TOKEN
+```
+
+There is no linter. TypeScript is strict with `noUncheckedIndexedAccess` and ESM (`NodeNext`), so relative imports use `.js` extensions.
+
+## Architecture
+
+- **`src/core/**` and `src/app.ts` are runtime-agnostic.** Web APIs only (fetch, `crypto.subtle`, AbortSignal, TextEncoder). No `node:*`, `fs`, `process`, `googleapis` or `google-auth-library`. `tsconfig.core.json` type-checks them with `types: []` to enforce this; `grep -rn "node:" src/core src/app.ts` must stay empty.
+- **Adapters** build the config, `GscService`, `TokenStore` and `createApp()` and supply a `StateStore`:
+  - `src/node/index.ts`: `@hono/node-server`, `FileStateStore` (one JSON file per key in `DATA_DIR`, atomic writes), key from `GOOGLE_SERVICE_ACCOUNT_JSON` or the `GOOGLE_APPLICATION_CREDENTIALS` file.
+  - `src/worker/index.ts`: one global Durable Object `GscHub` (`idFromName('global')`) with `DoStateStore`; key only from the `GOOGLE_SERVICE_ACCOUNT_JSON` secret. `/healthz` is answered before the DO.
+- **`StateStore`** (`core/state.ts`): `get/put/delete` key-value. `StoredState` coalesces writes and logs (never throws) on failure; in-memory state stays authoritative. Keys: `quota-state`, `pause-state`, `tokens`, `inspected:<site>`, `inspection:<site>:<url>` (`encodeURIComponent`-ed, since Node maps keys to file names; keys over 200 chars are hashed).
+- **HTTP** (`app.ts`): a new `McpServer` + transport per POST; GET/DELETE return 405. Bearer auth via a pluggable `VerifyToken`; `combinedVerifier` accepts issued tokens and the legacy `MCP_AUTH_TOKEN`. `/admin/tokens` exists only with `ADMIN_TOKEN`. `ALLOWED_HOSTS` guards the MCP and admin routes. `X-Token-Expires-At` is set when a token expires within 7 days.
+- **Tokens** (`core/tokens.ts`): all in one `tokens` entry; only SHA-256 hashes stored; rotation keeps the previous hash until `prevValidUntil`.
+- **Site scoping:** `buildServer()` replaces `service` with `service.scoped(auth.allowedSites)`, so a token's sites apply to every tool on top of `GSC_ALLOWED_SITES` (enforced in `GscService.site()`).
+
+Every Google call goes through `GscService.call()` (`core/google/service.ts`); tools never call the client directly. Pipeline, outermost first: cache (LRU+TTL, in-flight dedupe) → pause check (`checkBreaker`) → `withRetry` (backoff, honours Retry-After; quota errors on `searchAnalytics`/`urlInspection` are not retried) → `Semaphore` → `RateLimiter.acquire` (sliding windows + PT-midnight daily counters) → the request. Quota state is recorded while the semaphore slot is held.
+
+Quota model notes (read before changing anything here):
+- Google's numbers live only in `GOOGLE_LIMITS` (`core/limits/quotas.ts`), scaled by `QUOTA_SAFETY_FACTOR` (default 0.8). URL inspection: 2,000/property/day → 1,600 locally.
+- Google returns one error for every quota, so `classifyGoogleError` can't tell load quota from rate limit. For `searchAnalytics` and `urlInspection`, any quota error pauses that property: `QUOTA_PAUSE_STEPS_MS` (15 min, 1 h), then until PT midnight. Steps go up only with no success since the last pause; reset on a new PT day.
+- First-step pauses on 3 properties within 10 min pause Search Analytics for all properties for 5 min.
+- Inspection-spending tools take `maxInspections` (default and max `MAX_BATCH_URLS` = 25) via `inspectCapped()` and report `quotaUsed`. `batch_inspect_urls` stops at `BATCH_DEADLINE_MS` (90 s).
+- `pagesWithImpressions()` (`tools/indexWatch.ts`) uses one `rowLimit: 1000` query sorted by clicks; a known shortcut.
+
+Other rules:
+- `normalizeSiteUrl` validates user input before any quota is spent; values from Google go through `normalizeKnownSiteUrl` (never throws).
+- Errors reach clients as `GscToolError` (`code`, message, `retryAfterSeconds`/`resetAt`). Wrap tool handlers with `handle()` (`tools/common.ts`), which passes the abort `signal`.
+- Every tool is annotated read-only (`READ_ONLY`), and `test/http.test.ts` enforces it. Inspection history (`src/core/inspectionHistory.ts`) is recorded as a side effect of `GscService.inspectUrl` (non-cached results only), like quota state. Never add a tool that writes on request.
+
+## Tests
+
+`test/helpers.ts`: `fakeApi()` (in-memory `GscApi`), `makeService()` (safetyFactor 1, `maxQueueWaitMs` 0, millisecond retries), `googleError(status, reason, message, headers)`. `MemoryStateStore` (`core/state.ts`) stands in for persistence. Time-dependent tests use `vi.useFakeTimers({ toFake: ['Date'] })` and `vi.setSystemTime`.
+
+## Deployment
+
+- Docker/Node: `docker compose up -d --build` with `.env` (from `.env.example`) and the key in `./secrets/gsc-sa.json`; state in the `gsc-data` volume.
+- Workers: `wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON` and `ADMIN_TOKEN`, other settings in `"vars"` of `wrangler.jsonc`, then `npm run cf:check` and `npm run cf:deploy`.
+- Keys, `.env` and tokens never go into the repository.

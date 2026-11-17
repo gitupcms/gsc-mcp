@@ -1,0 +1,56 @@
+import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import type { AuthContext } from '../auth.js';
+import { GscToolError } from '../errors.js';
+import type { GscService } from '../google/service.js';
+import type { Logger } from '../logger.js';
+
+export interface ToolDeps {
+  service: GscService;
+  logger: Logger;
+  maxRowsPerCall: number;
+  /** The caller's token; its allowedSites narrow GSC_ALLOWED_SITES for this request. */
+  auth?: AuthContext;
+}
+
+export const READ_ONLY: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+
+export const siteUrlSchema = z
+  .string()
+  .min(1)
+  .describe('Search Console property, exactly as list_sites returns it: "https://www.example.com/" (URL-prefix) or "sc-domain:example.com" (domain).');
+
+export const bypassCacheSchema = z.boolean().optional().describe('Skip the server cache and fetch fresh data from Google. This costs quota, so use it sparingly.');
+
+export function ok(data: Record<string, unknown>): CallToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data };
+}
+
+export function fail(err: unknown, logger: Logger): CallToolResult {
+  let e: GscToolError;
+  if (err instanceof GscToolError) e = err;
+  else {
+    logger.error('unexpected tool error', { error: (err as Error)?.message });
+    e = new GscToolError('INTERNAL', 'Internal server error.');
+  }
+  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: e.code, message: e.message, ...e.details } }) }] };
+}
+
+/** What a tool body gets besides its arguments. `signal` aborts when the client goes away. */
+export interface ToolContext {
+  signal: AbortSignal;
+}
+
+/** Wraps a tool body so every failure becomes an MCP tool error result. */
+export function handle<A>(
+  logger: Logger,
+  fn: (args: A, ctx: ToolContext) => Promise<Record<string, unknown>>,
+): (args: A, extra: ToolContext) => Promise<CallToolResult> {
+  return async (args, extra) => {
+    try {
+      return ok(await fn(args, { signal: extra.signal }));
+    } catch (err) {
+      return fail(err, logger);
+    }
+  };
+}

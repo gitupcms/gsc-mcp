@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gitupcms-gscmcp",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  // One global Durable Object holds the rate limiter, cache, pauses and tokens.
+  "durable_objects": {
+    "bindings": [{ "name": "GSC_HUB", "class_name": "GscHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GscHub"] }],
+  "observability": { "enabled": true }
+  // Secrets: wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON / ADMIN_TOKEN (optional: MCP_AUTH_TOKEN).
+  // Other settings (ALLOWED_HOSTS, GSC_ALLOWED_SITES, TOKEN_TTL_DAYS, ...) go in "vars".
+}
