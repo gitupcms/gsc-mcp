@@ -11,5 +11,4 @@
   "observability": { "enabled": true }
   // Secrets: wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON / ADMIN_TOKEN (optional: MCP_AUTH_TOKEN).
   // Other settings (ALLOWED_HOSTS, GSC_ALLOWED_SITES, TOKEN_TTL_DAYS, ...) go in "vars".
-  // OAuth for claude.ai connectors is on with ADMIN_TOKEN; PUBLIC_URL is only needed if the request URL isn't the public one.
 }

@@ -58,27 +58,12 @@ const ConfigSchema = z.object({
     .regex(/^(\/[A-Za-z0-9._~-]+)+$/, 'MCP_PATH must look like /mcp or /gsc-mcp (no trailing slash)')
     .refine((p) => p !== '/healthz', 'MCP_PATH cannot be /healthz')
     .refine((p) => p !== '/admin' && !p.startsWith('/admin/'), 'MCP_PATH cannot be under /admin')
-    .refine((p) => !/^\/(oauth|\.well-known)(\/|$)/.test(p), 'MCP_PATH cannot be under /oauth or /.well-known')
     .default('/mcp'),
   ALLOWED_HOSTS: csv.transform((hosts, ctx) =>
     hosts?.map((h) => {
       const name = hostnameOnly(h);
       if (name === undefined) ctx.addIssue({ code: 'custom', message: `"${h}" is not a hostname; use e.g. gsc-mcp.example.com (no https:// or path)` });
       return name ?? '';
-    }),
-  ),
-  // Public origin for OAuth metadata behind a reverse proxy, e.g. https://gsc.example.com (no path). Default: the request's origin.
-  PUBLIC_URL: z
-    .string()
-    .url()
-    .refine((u) => /^https?:$/.test(new URL(u).protocol) && new URL(u).pathname === '/' && !new URL(u).search && !new URL(u).hash, 'PUBLIC_URL must be an origin like https://gsc.example.com (no path)')
-    .transform((u) => new URL(u).origin)
-    .optional(),
-  // Extra exact redirect URIs the OAuth server accepts besides the claude.ai/claude.com callbacks and loopback.
-  OAUTH_REDIRECT_URIS: csv.transform((uris, ctx) =>
-    uris?.map((u) => {
-      if (!URL.canParse(u)) ctx.addIssue({ code: 'custom', message: `"${u}" is not a URL` });
-      return u;
     }),
   ),
   GSC_ALLOWED_SITES: csv,
