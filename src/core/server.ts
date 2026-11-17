@@ -18,7 +18,8 @@ export const SERVER_VERSION = '0.1.0';
 
 const INSTRUCTIONS = `Read-only access to Google Search Console (Search Console data is never changed).
 Start with list_sites to get valid siteUrl values, get_capabilities for tools, sites and quota left, or get_site_overview for a quick summary of one property.
-search_analytics_query returns performance data (clicks, impressions, CTR, position); "type" picks the search type (web, image for Google Images, video, news, discover, googleNews; discover and googleNews have no query data). Keep date ranges short and dimensions few where you can; query+page grouping over long ranges is expensive.
+search_analytics_query returns performance data (clicks, impressions, CTR, position); "type" picks the search type (web, image for Google Images, video, news, discover, googleNews; discover and googleNews have no query data). Keep date ranges short and dimensions few where you can; query+page grouping over long ranges is expensive. Give startDate/endDate or days (last N days of available data); sortBy/sortDirection sort only the returned rows (Google picks them by clicks).
+get_page_queries lists the queries that bring traffic to one page.
 compare_periods compares two date ranges, as totals or matched per query/page/country/device, with the change for each row.
 find_ctr_opportunities lists pages whose impressions grew while CTR fell, as a prioritized to-do list; find_cannibalization finds queries where several pages compete.
 inspect_url / batch_inspect_urls show how Google indexed specific URLs; inspect_top_pages inspects the pages with the most impressions. find_deindexed_pages lists pages with impressions that are not indexed.

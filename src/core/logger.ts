@@ -8,12 +8,15 @@ export interface Logger {
   error(msg: string, fields?: Record<string, unknown>): void;
 }
 
-/** Structured JSON logger via console (works on Node and Workers). Never pass secrets in `fields`. */
-export function createLogger(level: LogLevel = 'info'): Logger {
+/**
+ * Structured JSON logger via console (works on Node and Workers). Never pass secrets in `fields`.
+ * `target` "stderr" keeps stdout free for JSON-RPC under the stdio transport.
+ */
+export function createLogger(level: LogLevel = 'info', target: 'stdout' | 'stderr' = 'stdout'): Logger {
   const min = LEVELS[level];
   const write = (lvl: LogLevel, msg: string, fields?: Record<string, unknown>) => {
     if (LEVELS[lvl] < min) return;
-    console.log(JSON.stringify({ time: new Date().toISOString(), level: lvl, msg, ...fields }));
+    (target === 'stderr' ? console.error : console.log)(JSON.stringify({ time: new Date().toISOString(), level: lvl, msg, ...fields }));
   };
   return {
     debug: (m, f) => write('debug', m, f),

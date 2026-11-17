@@ -3,7 +3,7 @@
 A read-only [MCP](https://modelcontextprotocol.io) server for the **Google Search Console API**. It speaks Streamable HTTP (stateless, POST only), so AI agents and MCP clients anywhere can read Search Console data: performance, indexing status, sitemaps and properties, plus SEO helpers built on top of them.
 
 - **Read-only by design.** It requests only the `https://www.googleapis.com/auth/webmasters.readonly` OAuth scope. Even if a client token or the server itself is compromised, Google rejects any write to Search Console.
-- **Two runtimes, one core.** Runs on Node.js (Docker or bare) and on Cloudflare Workers (one Durable Object).
+- **Two runtimes, one core.** Runs on Node.js (Docker or bare) and on Cloudflare Workers (one Durable Object). On Node it can also run as a local stdio server that Claude Desktop, Claude Code or Cursor start themselves.
 - **Per-client tokens.** Issue, list, rotate and revoke bearer tokens with an expiry and an optional per-token property allowlist.
 - **Stays inside Google's quotas.** Caching, local rate limiting at 80% of Google's published limits, retries with backoff, and per-property pauses after quota errors.
 
@@ -22,6 +22,7 @@ Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-
 - [Deploy: Cloudflare Workers](#deploy-cloudflare-workers)
 - [Token management](#token-management)
 - [Connect a client](#connect-a-client)
+- [Claude Code / Cursor plugin](#claude-code--cursor-plugin)
 - [Configuration reference](#configuration-reference)
 - [Quota model](#quota-model)
 - [Index watch: compare before and after a deploy](#index-watch-compare-before-and-after-a-deploy)
@@ -36,8 +37,9 @@ Based on [MichalBrylKaminski/gsc-mcp](https://github.com/MichalBrylKaminski/gsc-
 | `get_site` | sites.get | One property |
 | `list_sitemaps` | sitemaps.list | Submitted sitemaps (or one index's children): status, errors, warnings, URL counts |
 | `get_sitemap` | sitemaps.get | One sitemap |
-| `search_analytics_query` | searchanalytics.query | Clicks, impressions, CTR, position with dimensions, filters (incl. regex), search types (`web`, `image`, `video`, `news`, `discover`, `googleNews`), aggregation and data state. `fetchAll` pages automatically (5,000 rows unless `maxRows` asks for more) |
-| `compare_periods` | searchanalytics.query | Totals for two date ranges with the change, and optionally rows matched by query/page/country/device, sorted by movers, gains or losses. Baseline defaults to the same number of days just before the current period |
+| `search_analytics_query` | searchanalytics.query | Clicks, impressions, CTR, position with dimensions, filters (incl. regex), search types (`web`, `image`, `video`, `news`, `discover`, `googleNews`), aggregation and data state. Dates as `startDate`/`endDate` or `days` (last N days of available data). `sortBy` (`clicks`, `impressions`, `ctr`, `position`) and `sortDirection` sort the returned rows; Google still picks which rows to return by clicks. `fetchAll` pages automatically (5,000 rows unless `maxRows` asks for more) |
+| `compare_periods` | searchanalytics.query | Totals for two date ranges with the change, and optionally rows matched by query/page/country/device, sorted by movers, gains or losses. Baseline defaults to the same number of days just before the current period. `days` can replace `currentStart`/`currentEnd` |
+| `get_page_queries` | searchanalytics.query | The queries that bring traffic to one page (exact page filter). `pageUrl` must be inside the property; last 28 days and top 50 queries by default, `days` or dates, `rowLimit`, `sortBy` |
 | `get_site_overview` | composite | Permission level, sitemap health, totals for the last N days vs. the N days before |
 | `find_ctr_opportunities` | 2x searchanalytics.query (+ optional inspections) | Pages whose impressions grew while CTR fell, grouped by page and ranked by estimated lost clicks. `inspectTop` (max 25) also inspects the top pages |
 | `find_cannibalization` | searchanalytics.query | Queries where two or more pages each get a real share of impressions |
@@ -161,6 +163,33 @@ npm start                                                          # node dist/n
 
 State is stored as one JSON file per key in `DATA_DIR`.
 
+### Local stdio (Claude Desktop / Claude Code / Cursor)
+
+For one person on one machine, the client can start the server as a subprocess and talk to it over stdin/stdout. Start it with `--stdio` (or `MCP_TRANSPORT=stdio`). There is no HTTP server, no bearer token and no `/admin/tokens`: the trust boundary is your operating system user, so `ADMIN_TOKEN`/`MCP_AUTH_TOKEN` are not needed. `GSC_ALLOWED_SITES` still applies. Logs go to stderr, stdout carries only JSON-RPC. Quota state lives in `DATA_DIR`, which defaults to `~/.gitupcms-gscmcp` under stdio; only one process may use a `DATA_DIR` at a time, so give each concurrent client its own.
+
+```bash
+npm ci && npm run build
+claude mcp add gsc --scope user \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/path/to/gsc-sa.json \
+  -- node /path/to/gsc-mcp/dist/node/index.js --stdio
+```
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`) or a Claude Code `.mcp.json` take the same shape:
+
+```json
+{
+  "mcpServers": {
+    "gsc": {
+      "command": "node",
+      "args": ["/path/to/gsc-mcp/dist/node/index.js", "--stdio"],
+      "env": { "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/gsc-sa.json" }
+    }
+  }
+}
+```
+
+OAuth works the same way: pass the three `GOOGLE_OAUTH_*` variables in `env` instead of the key path. `npm run start:stdio` starts the built server in stdio mode, and the package declares a `gitupcms-gscmcp` binary (`npm link` puts it on your `PATH`).
+
 ## Deploy: Cloudflare Workers
 
 Configuration is in `wrangler.jsonc`: one Durable Object class `GscHub` (binding `GSC_HUB`) holds the rate limiter, cache, pauses, tokens and inspection history. Key files are not available on Workers, so the key goes in a secret as JSON (or use the three `GOOGLE_OAUTH_*` secrets instead, see [OAuth setup](#oauth-setup)).
@@ -233,7 +262,21 @@ claude mcp list
 
 The shell expands the token, so it is saved in plain text in `~/.claude.json`. To share with a team, commit a `.mcp.json` using `"headers": { "Authorization": "Bearer ${GSC_MCP_TOKEN}" }` instead.
 
-Quick check with curl:
+## Claude Code / Cursor plugin
+
+The repository is also a plugin for Claude Code (`.claude-plugin/plugin.json`) and Cursor (`.cursor-plugin/plugin.json`). It bundles the four workflows as skills (`skills/*/SKILL.md`, the same steps as the prompts) and connects to your remote HTTP server through two environment variables:
+
+```bash
+export GSC_MCP_URL='https://gsc-mcp.example.com/mcp'
+export GSC_MCP_TOKEN='gsc_...'
+```
+
+- Claude Code reads `.mcp.json`, which uses Claude Code's `${VAR}` expansion in `url` and `headers`.
+- Cursor reads `mcp.json`, which uses Cursor's `${env:VAR}` syntax. This was written from Cursor's documentation and not tested against every Cursor version; if your Cursor does not expand it, put the URL and header in `~/.cursor/mcp.json` directly.
+
+Install it with your client's plugin command pointed at this repository (or a local clone). To run the server locally instead, replace the server entry with the stdio example from [Local stdio](#local-stdio-claude-desktop--claude-code--cursor).
+
+Quick check with curl (HTTP server):
 
 ```bash
 curl -s https://gsc-mcp.example.com/mcp \
@@ -246,13 +289,14 @@ curl -s https://gsc-mcp.example.com/mcp \
 
 | Variable | Default | Description |
 |---|---|---|
+| `MCP_TRANSPORT` | `http` | `http` or `stdio` (Node only; the `--stdio` flag does the same) |
 | `ADMIN_TOKEN` | (off) | Enables `/admin/tokens`. Min. 32 chars |
-| `MCP_AUTH_TOKEN` | (off) | Legacy shared bearer token. Min. 32 chars. One of these two is required |
+| `MCP_AUTH_TOKEN` | (off) | Legacy shared bearer token. Min. 32 chars. One of these two is required over HTTP, neither under stdio |
 | `TOKEN_TTL_DAYS` | `90` | Default lifetime of issued tokens (1-365) |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | | The key JSON itself. Required on Workers; takes precedence on Node |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Path to the key file (Node only) |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REFRESH_TOKEN` | | OAuth sign-in (all three; token from `npm run oauth:login`). Set either these or a service account key, not both |
-| `DATA_DIR` | `./data` (`/data` in Docker) | Writable state directory (Node only) |
+| `DATA_DIR` | `./data` (`/data` in Docker, `~/.gitupcms-gscmcp` under stdio) | Writable state directory (Node only) |
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Listen address (Node only) |
 | `HOST_PORT` | `3000` | Docker Compose: port published on `127.0.0.1` |
 | `MCP_PATH` | `/mcp` | MCP endpoint path. No trailing slash; not `/healthz` or under `/admin` |
@@ -300,7 +344,8 @@ Catch pages falling out of the index before traffic drops. Every non-cached insp
 - **Top pages are capped at 1,000.** "Top pages by impressions" (`inspect_top_pages`, `find_deindexed_pages`) comes from one Search Analytics request with `rowLimit` 1,000. Google sorts by clicks, so on large sites pages with many impressions but few clicks can be missed. Inspect those with `batch_inspect_urls`.
 - **Snapshots cover at most 25 URLs per call** (the inspection cap); larger sets need several calls and more quota.
 - **Data lag:** final data lags 2-3 days; dates are Pacific Time. Use `dataState: "all"` for fresher, incomplete data.
-- **Stateless transport only:** GET/DELETE on the MCP path return 405; clients needing the old HTTP+SSE transport are not supported.
+- **Stateless transport only:** GET/DELETE on the MCP path return 405; clients needing the old HTTP+SSE transport are not supported. Local clients can use stdio instead.
+- **Sorting is per response:** `sortBy` reorders the rows Google returned. Google always picks rows by clicks, so sorting by position or CTR does not find rows beyond `rowLimit`.
 
 ## Development
 
@@ -319,13 +364,19 @@ Layout:
 src/
   app.ts              Hono app: bearer auth, Host check, MCP endpoint, /healthz, /admin/tokens
   core/               runtime-agnostic (Web APIs only): config, tools, Google client, limits, tokens, state
-  node/               Node adapter: @hono/node-server, FileStateStore
+  node/               Node adapter: @hono/node-server or stdio, FileStateStore
   worker/             Workers adapter: GscHub Durable Object, DoStateStore
 scripts/token.ts      token admin CLI
 scripts/oauth-login.ts  OAuth refresh-token helper (npm run oauth:login)
 test/                 vitest tests with an in-memory fake of the Google API
+skills/               Claude Code / Cursor skills (the prompt workflows)
+.claude-plugin/ .cursor-plugin/ .mcp.json mcp.json  plugin manifests and the remote server entry
 ```
 
 ## License
 
 [MIT](LICENSE)
+
+## Privacy
+
+This is a self-hosted server: it runs on your own machine, server or Cloudflare account, and nobody else operates it. Search Console data goes only from Google to your server and from there to the MCP clients you give a token to. The server stores quota counters, token hashes and recent URL inspection summaries in its own storage (`DATA_DIR` or the Durable Object). It sends no telemetry and uses no third-party services besides Google's APIs.

@@ -58,6 +58,7 @@ describe('HTTP transport', () => {
       'find_ctr_opportunities',
       'find_deindexed_pages',
       'get_capabilities',
+      'get_page_queries',
       'get_quota_status',
       'get_site',
       'get_site_overview',

@@ -66,6 +66,8 @@ describe('auth settings', () => {
   it('needs ADMIN_TOKEN or MCP_AUTH_TOKEN and keeps admin out of MCP_PATH', () => {
     const key = { GOOGLE_APPLICATION_CREDENTIALS: 'key.json' };
     expect(() => loadConfig(key)).toThrow(/ADMIN_TOKEN/);
+    expect(loadConfig({ ...key, MCP_TRANSPORT: 'stdio' }).MCP_TRANSPORT).toBe('stdio');
+    expect(() => loadConfig({ ...key, MCP_TRANSPORT: 'sse' })).toThrow(/MCP_TRANSPORT/);
     expect(loadConfig({ ...key, ADMIN_TOKEN: 'a'.repeat(32) }).TOKEN_TTL_DAYS).toBe(90);
     expect(() => loadConfig({ ...key, ADMIN_TOKEN: 'short' })).toThrow(/ADMIN_TOKEN/);
     expect(() => loadConfig({ ...base, TOKEN_TTL_DAYS: '366' })).toThrow(/TOKEN_TTL_DAYS/);

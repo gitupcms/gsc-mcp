@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gitupcms-gscmcp": {
+      "type": "http",
+      "url": "${GSC_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${GSC_MCP_TOKEN}"
+      }
+    }
+  }
+}

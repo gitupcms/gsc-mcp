@@ -5,7 +5,7 @@ import type { GscService } from '../google/service.js';
 import { addDays, daysBetween, ptDay } from '../time.js';
 import { bypassCacheSchema, handle, READ_ONLY, siteUrlSchema, type ToolDeps } from './common.js';
 import { FINAL_DATA_LAG_DAYS, periodChange } from './overview.js';
-import { DEFAULT_FETCH_ALL_ROWS, dateSchema, runSearchAnalytics, searchAnalyticsInput, validateQuery, type SearchAnalyticsInput } from './searchAnalytics.js';
+import { DEFAULT_FETCH_ALL_ROWS, dateSchema, daysSchema, resolveDates, runSearchAnalytics, searchAnalyticsInput, validateQuery, type SearchAnalyticsInput } from './searchAnalytics.js';
 
 /** Dimensions whose values mean the same thing in both periods, so rows can be matched. */
 const COMPARE_DIMENSIONS = ['query', 'page', 'country', 'device', 'searchAppearance'] as const;
@@ -16,8 +16,11 @@ export const MAX_COMPARE_LIMIT = 1_000;
 
 export const comparePeriodsInput = {
   siteUrl: siteUrlSchema,
-  currentStart: dateSchema.describe('First day of the period you are analyzing, inclusive, YYYY-MM-DD in Pacific Time.'),
-  currentEnd: dateSchema.describe('Last day of the period you are analyzing, inclusive.'),
+  currentStart: dateSchema.optional().describe('First day of the period you are analyzing, inclusive, YYYY-MM-DD in Pacific Time. Give currentStart and currentEnd, or days.'),
+  currentEnd: dateSchema.optional().describe('Last day of the period you are analyzing, inclusive.'),
+  days: daysSchema.optional().describe(
+    'Instead of currentStart/currentEnd: the current period is the last N days (1-480) ending 4 days before today in Pacific Time (1 day with dataState "all"). The response shows the dates used.',
+  ),
   previousStart: dateSchema
     .optional()
     .describe('First day of the baseline period. Omit previousStart and previousEnd to use the same number of days just before currentStart.'),
@@ -65,19 +68,20 @@ interface Period {
 }
 
 /** Fills in the default baseline: the same number of days just before the current period. */
-export function resolvePeriods(a: Pick<ComparePeriodsInput, 'currentStart' | 'currentEnd' | 'previousStart' | 'previousEnd'>) {
+export function resolvePeriods(a: Pick<ComparePeriodsInput, 'currentStart' | 'currentEnd' | 'previousStart' | 'previousEnd' | 'days' | 'dataState'>) {
+  const { startDate: currentStart, endDate: currentEnd } = resolveDates(a.currentStart, a.currentEnd, a.days, a.dataState, ['currentStart', 'currentEnd']);
   const errors: string[] = [];
-  if (a.currentStart > a.currentEnd) errors.push('currentStart must be on or before currentEnd.');
+  if (currentStart > currentEnd) errors.push('currentStart must be on or before currentEnd.');
   if ((a.previousStart === undefined) !== (a.previousEnd === undefined)) errors.push('Give both previousStart and previousEnd, or neither.');
   else if (a.previousStart && a.previousEnd && a.previousStart > a.previousEnd) errors.push('previousStart must be on or before previousEnd.');
   if (errors.length) throw new GscToolError('INVALID_ARGUMENT', errors.join(' '));
 
-  const days = daysBetween(a.currentStart, a.currentEnd) + 1;
-  const current: Period = { startDate: a.currentStart, endDate: a.currentEnd };
+  const days = daysBetween(currentStart, currentEnd) + 1;
+  const current: Period = { startDate: currentStart, endDate: currentEnd };
   const previous: Period =
     a.previousStart && a.previousEnd
       ? { startDate: a.previousStart, endDate: a.previousEnd }
-      : { startDate: addDays(a.currentStart, -days), endDate: addDays(a.currentStart, -1) };
+      : { startDate: addDays(currentStart, -days), endDate: addDays(currentStart, -1) };
   return { current, previous };
 }
 
@@ -300,7 +304,7 @@ export function registerComparePeriodsTools(server: McpServer, { service, logger
         '(clicksPct, impressionsPct, ctrPoints in percentage points, position where negative means better), and, when dimensions are given, ' +
         'rows matched across the periods with each one\'s change. Row status: "both", "new" (no data in the baseline), "gone" (no data in the current period), ' +
         'or "notInPreviousRows"/"notInCurrentRows" when the row ranked below the rows fetched for that period, so its values there are unknown (null). ' +
-        'The baseline defaults to the same number of days just before currentStart. Check "warnings" before drawing conclusions. ' +
+        'Give currentStart/currentEnd or days. The baseline defaults to the same number of days just before the current period. Check "warnings" before drawing conclusions. ' +
         'Totals come from a query without dimensions, so they include anonymized queries that query rows leave out. Results are cached.',
       inputSchema: comparePeriodsInput,
       annotations: READ_ONLY,

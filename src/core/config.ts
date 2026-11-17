@@ -48,6 +48,8 @@ const ConfigSchema = z.object({
   GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   GOOGLE_OAUTH_REFRESH_TOKEN: z.string().min(1).optional(),
+  // stdio: one local client spawns the server as a subprocess; no HTTP server, no bearer tokens.
+  MCP_TRANSPORT: z.enum(['http', 'stdio']).default('http'),
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   // Path of the MCP endpoint, e.g. /gsc-mcp when a reverse proxy publishes it under that path.
@@ -87,7 +89,7 @@ const ConfigSchema = z.object({
       'GOOGLE_SERVICE_ACCOUNT_JSON',
     );
   }
-}).refine((c) => c.MCP_AUTH_TOKEN || c.ADMIN_TOKEN, {
+}).refine((c) => c.MCP_TRANSPORT === 'stdio' || c.MCP_AUTH_TOKEN || c.ADMIN_TOKEN, {
   message: 'Set ADMIN_TOKEN (to issue tokens via /admin/tokens) and/or MCP_AUTH_TOKEN (legacy shared token)',
   path: ['ADMIN_TOKEN'],
 });

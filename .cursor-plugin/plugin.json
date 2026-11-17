@@ -1,0 +1,15 @@
+{
+  "name": "gitupcms-gscmcp",
+  "displayName": "Search Console MCP (read-only)",
+  "version": "0.1.0",
+  "description": "Connect a read-only Google Search Console MCP server to Cursor. Query search performance, inspect URLs, audit indexing and find content opportunities.",
+  "author": {
+    "name": "gitupcms"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/gitupcms/gsc-mcp",
+  "repository": "https://github.com/gitupcms/gsc-mcp",
+  "keywords": ["seo", "google-search-console", "analytics", "mcp", "gsc"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

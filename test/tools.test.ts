@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SearchAnalyticsQueryRequest } from '../src/core/google/client.js';
 import { comparePeriods, LAG_PADDING_DAYS, runSiteOverview } from '../src/core/tools/overview.js';
-import { DEFAULT_FETCH_ALL_ROWS, MAX_PAGE_SIZE, runSearchAnalytics, validateQuery, type SearchAnalyticsInput } from '../src/core/tools/searchAnalytics.js';
+import { DEFAULT_FETCH_ALL_ROWS, MAX_PAGE_SIZE, runPageQueries, runSearchAnalytics, validateQuery, type SearchAnalyticsInput } from '../src/core/tools/searchAnalytics.js';
 import { runBatchInspection } from '../src/core/tools/urlInspection.js';
 import { fakeApi, googleError, makeService } from './helpers.js';
 
@@ -92,6 +92,87 @@ describe('runSearchAnalytics', () => {
     const query = pagedApi(1);
     const service = makeService(fakeApi({ querySearchAnalytics: query }));
     await expect(runSearchAnalytics(service, { ...base, dimensions: ['hour'] }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('search analytics sorting', () => {
+  const rows = [
+    { keys: ['a'], clicks: 5, impressions: 10, ctr: 0.5, position: 8 },
+    { keys: ['b'], clicks: 3, impressions: 90, ctr: 0.0333, position: 2 },
+    { keys: ['c'], clicks: 1, impressions: 40, ctr: 0.025, position: 4 },
+  ];
+  const keys = (r: { rows: unknown[][] }) => r.rows.map((x) => x[0]);
+
+  it('sorts the returned rows after the cache, without changing the request', async () => {
+    const query = vi.fn(async () => ({ rows }));
+    const service = makeService(fakeApi({ querySearchAnalytics: query }));
+    const q = { ...base, dimensions: ['query' as const] };
+    expect(keys(await runSearchAnalytics(service, { ...q, sortBy: 'impressions' }, 1000))).toEqual(['b', 'c', 'a']);
+    const byPos = await runSearchAnalytics(service, { ...q, sortBy: 'position' }, 1000);
+    expect(keys(byPos)).toEqual(['b', 'c', 'a']);
+    expect(byPos).toMatchObject({ sortedBy: 'position', sortDirection: 'asc', cached: true });
+    expect(keys(await runSearchAnalytics(service, { ...q, sortBy: 'position', sortDirection: 'desc' }, 1000))).toEqual(['a', 'c', 'b']);
+    expect(keys(await runSearchAnalytics(service, { ...q, sortBy: 'ctr', sortDirection: 'asc' }, 1000))).toEqual(['c', 'b', 'a']);
+    const plain = await runSearchAnalytics(service, q, 1000);
+    expect(keys(plain)).toEqual(['a', 'b', 'c']);
+    expect(plain).not.toHaveProperty('sortedBy');
+    // One Google request: the sort is not part of the cache key.
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('relative dates (days)', () => {
+  afterEach(() => vi.useRealTimers());
+  const { startDate: _s, endDate: _e, ...noDates } = base;
+
+  it('ends 4 days before today in PT (1 day for dataState "all") and reports the dates', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // 2026-11-18 05:00 UTC is still 2026-11-17 in Pacific Time.
+    vi.setSystemTime(new Date('2026-11-18T05:00:00Z'));
+    const query = pagedApi(0);
+    const service = makeService(fakeApi({ querySearchAnalytics: query }));
+    expect(await runSearchAnalytics(service, { ...noDates, days: 7 }, 1000)).toMatchObject({ startDate: '2026-11-07', endDate: '2026-11-13' });
+    expect(query.mock.calls[0]![1]).toMatchObject({ startDate: '2026-11-07', endDate: '2026-11-13' });
+    expect(await runSearchAnalytics(service, { ...noDates, days: 1, dataState: 'all' }, 1000)).toMatchObject({ startDate: '2026-11-16', endDate: '2026-11-16' });
+  });
+
+  it('rejects days together with dates, and missing dates, without calling Google', async () => {
+    const query = pagedApi(1);
+    const service = makeService(fakeApi({ querySearchAnalytics: query }));
+    await expect(runSearchAnalytics(service, { ...base, days: 7 }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringMatching(/not both/) });
+    await expect(runSearchAnalytics(service, { ...noDates, endDate: '2026-10-31', days: 7 }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    await expect(runSearchAnalytics(service, { ...noDates, startDate: '2026-10-01' }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringMatching(/or days/) });
+    expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('runPageQueries', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('queries one page by an exact page filter, last 28 days and 50 rows by default', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-17T20:00:00Z'));
+    const query = pagedApi(100);
+    const service = makeService(fakeApi({ querySearchAnalytics: query }));
+    const res = await runPageQueries(service, { siteUrl: 'sc-domain:a.com', pageUrl: 'https://www.a.com/blog/x' }, 25_000);
+    expect(res).toMatchObject({ pageUrl: 'https://www.a.com/blog/x', startDate: '2026-10-17', endDate: '2026-11-13', rowCount: 50, columns: ['query', 'clicks', 'impressions', 'ctr', 'position'] });
+    expect(query.mock.calls[0]![1]).toMatchObject({
+      dimensions: ['query'],
+      rowLimit: 50,
+      dimensionFilterGroups: [{ groupType: 'and', filters: [{ dimension: 'page', operator: 'equals', expression: 'https://www.a.com/blog/x' }] }],
+    });
+    await runPageQueries(service, { siteUrl: 'sc-domain:a.com', pageUrl: 'https://a.com/', startDate: '2026-10-01', endDate: '2026-10-02' }, 25_000);
+    expect(query.mock.calls[1]![1]).toMatchObject({ startDate: '2026-10-01', endDate: '2026-10-02' });
+  });
+
+  it('rejects a page outside the property without calling Google', async () => {
+    const query = pagedApi(1);
+    const service = makeService(fakeApi({ querySearchAnalytics: query }));
+    for (const pageUrl of ['https://evil.com/a.com', 'not a url', 'ftp://a.com/x']) {
+      await expect(runPageQueries(service, { siteUrl: 'sc-domain:a.com', pageUrl }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    }
+    await expect(runPageQueries(service, { siteUrl: 'https://www.a.com/blog/', pageUrl: 'https://www.a.com/shop/' }, 1000)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
     expect(query).not.toHaveBeenCalled();
   });
 });

@@ -9,10 +9,14 @@
     "node": ">=24"
   },
   "main": "dist/node/index.js",
+  "bin": {
+    "gitupcms-gscmcp": "dist/node/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/node/index.ts",
     "start": "node dist/node/index.js",
+    "start:stdio": "node dist/node/index.js --stdio",
     "typecheck": "tsc --noEmit -p tsconfig.core.json && tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
     "test": "vitest run",
     "test:watch": "vitest",

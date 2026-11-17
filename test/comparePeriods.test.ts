@@ -25,6 +25,22 @@ describe('resolvePeriods', () => {
       resolvePeriods({ currentStart: '2026-10-01', currentEnd: '2026-10-02', previousStart: '2026-09-05', previousEnd: '2026-09-01' }),
     ).toThrow(/previousStart/);
   });
+
+  it('takes days for the current period, but not together with dates', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-17T20:00:00Z'));
+    try {
+      expect(resolvePeriods({ days: 7 })).toEqual({
+        current: { startDate: '2026-11-07', endDate: '2026-11-13' },
+        previous: { startDate: '2026-10-31', endDate: '2026-11-06' },
+      });
+      expect(resolvePeriods({ days: 7, dataState: 'all' }).current).toEqual({ startDate: '2026-11-10', endDate: '2026-11-16' });
+      expect(() => resolvePeriods({ days: 7, currentStart: '2026-10-01' })).toThrow(/not both/);
+      expect(() => resolvePeriods({})).toThrow(/or days/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('periodWarnings', () => {
